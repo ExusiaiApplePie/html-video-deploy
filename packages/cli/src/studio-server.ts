@@ -85,6 +85,18 @@ export async function startStudioServer(ctx: CliContext, port: number): Promise<
         if (m === 'GET') {
           return json(res, 200, { project: await ctx.orchestrator.load(id) });
         }
+        if (m === 'PATCH') {
+          const body = await readBody(req);
+          const project = await ctx.orchestrator.load(id);
+          if (typeof body.name === 'string' && body.name.trim()) {
+            project.name = body.name.trim().slice(0, 80);
+          }
+          if (typeof body.intent === 'string') {
+            project.intent = body.intent.slice(0, 280);
+          }
+          await ctx.projects.save(project);
+          return json(res, 200, { project: await ctx.orchestrator.load(id) });
+        }
         if (m === 'DELETE') {
           await ctx.orchestrator.remove(id);
           MESSAGES.delete(id);

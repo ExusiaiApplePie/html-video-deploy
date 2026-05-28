@@ -4,6 +4,8 @@ const API = {
   projects: () => fetch('/api/projects').then(r => r.json()),
   createProject: b => fetch('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json()),
   getProject: id => fetch(`/api/projects/${id}`).then(r => r.json()),
+  patchProject: (id, b) => fetch(`/api/projects/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json()),
+  deleteProject: id => fetch(`/api/projects/${id}`, { method: 'DELETE' }).then(r => r.json()),
   templates: () => fetch('/api/templates').then(r => r.json()),
   agents: () => fetch('/api/agents').then(r => r.json()),
   setTemplate: (id, tid) => fetch(`/api/projects/${id}/template`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ template_id: tid }) }).then(r => r.json()),
@@ -45,6 +47,36 @@ async function init() {
   wireModals();
   // Don't block — but surface failures in the console.
   agentsPromise.catch((e) => console.warn('agent detection failed:', e));
+
+  // Empty list → spin up a default project so the user lands inside one
+  // instead of an empty gallery.
+  if (state.projects.length === 0) {
+    const r = await API.createProject({ name: defaultProjectName(0) });
+    if (r && r.project) {
+      await refreshProjects();
+      await selectProject(r.project.id);
+      return;
+    }
+  }
+  // First load with existing projects → open the most recently updated one.
+  if (!state.selected && state.projects.length > 0) {
+    await selectProject(state.projects[0].id);
+  }
+}
+
+function defaultProjectName(seed) {
+  const n = (state.projects?.length ?? 0) + (seed ?? 0) + 1;
+  return `Untitled ${String(n).padStart(2, '0')}`;
+}
+
+async function createDefaultProject() {
+  const r = await API.createProject({ name: defaultProjectName(0) });
+  if (!r?.project) {
+    toast('Failed to create project', 'error');
+    return;
+  }
+  await refreshProjects();
+  await selectProject(r.project.id);
 }
 async function refreshTemplates() {
   const r = await API.templates();
@@ -83,11 +115,94 @@ function renderSidebar() {
   for (const p of state.projects) {
     const div = document.createElement('div');
     div.className = 'project-row' + (p.id === state.selectedId ? ' active' : '');
-    div.innerHTML = `<div class="name">${esc(p.name)}</div>
-      <div class="meta">${p.template_id ? esc(p.template_id) : 'no template'} · ${p.status}</div>`;
-    div.onclick = () => selectProject(p.id);
+    div.innerHTML = `
+      <div class="name">${esc(p.name)}</div>
+      <div class="meta">${p.template_id ? esc(p.template_id) : 'no template'} · ${p.status}</div>
+      <button class="row-menu-btn" title="More" data-pid="${esc(p.id)}">⋯</button>
+    `;
+    div.onclick = (e) => {
+      // Ignore clicks that started inside the menu button.
+      if (e.target.closest('.row-menu-btn') || e.target.closest('.row-menu')) return;
+      selectProject(p.id);
+    };
     list.appendChild(div);
   }
+  list.querySelectorAll('.row-menu-btn').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      openProjectMenu(btn);
+    };
+  });
+}
+
+function openProjectMenu(anchor) {
+  // Close any existing menu.
+  document.querySelectorAll('.row-menu').forEach((m) => m.remove());
+  const pid = anchor.dataset.pid;
+  const proj = state.projects.find((p) => p.id === pid);
+  if (!proj) return;
+  const menu = document.createElement('div');
+  menu.className = 'row-menu';
+  menu.innerHTML = `
+    <button data-act="rename">✎ 重命名</button>
+    <button data-act="delete">🗑 删除</button>
+  `;
+  // Position below the button.
+  const r = anchor.getBoundingClientRect();
+  menu.style.top = `${r.bottom + 4}px`;
+  menu.style.left = `${r.right - 140}px`;
+  document.body.appendChild(menu);
+  menu.querySelector('[data-act="rename"]').onclick = async () => {
+    menu.remove();
+    const next = prompt('新项目名', proj.name);
+    if (next == null) return;
+    const trimmed = next.trim();
+    if (!trimmed || trimmed === proj.name) return;
+    await API.patchProject(proj.id, { name: trimmed });
+    await refreshProjects();
+    if (state.selectedId === proj.id) {
+      state.selected = (await API.getProject(proj.id)).project;
+      renderToolbar();
+      renderFooter();
+    }
+  };
+  menu.querySelector('[data-act="delete"]').onclick = async () => {
+    menu.remove();
+    if (!confirm(`删除 "${proj.name}"？此操作不可撤销。`)) return;
+    await API.deleteProject(proj.id);
+    await refreshProjects();
+    if (state.selectedId === proj.id) {
+      state.selectedId = null;
+      state.selected = null;
+      state.messages = [];
+      // Pick the next available project, or build a fresh default.
+      if (state.projects.length > 0) {
+        await selectProject(state.projects[0].id);
+      } else {
+        const r = await API.createProject({ name: defaultProjectName(0) });
+        await refreshProjects();
+        if (r?.project) await selectProject(r.project.id);
+      }
+    }
+  };
+  // Close on outside click / Escape.
+  const close = (e) => {
+    if (menu.contains(e.target)) return;
+    menu.remove();
+    document.removeEventListener('mousedown', close);
+    document.removeEventListener('keydown', escClose);
+  };
+  const escClose = (e) => {
+    if (e.key === 'Escape') {
+      menu.remove();
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', escClose);
+    }
+  };
+  setTimeout(() => {
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', escClose);
+  }, 0);
 }
 
 // ============== toolbar ==============
@@ -259,7 +374,7 @@ function renderMain() {
   `;
   // Re-attach sidebar handlers (renderMain rebuilt the DOM)
   renderSidebar();
-  document.getElementById('btn-new').onclick = openNewModal;
+  document.getElementById('btn-new').onclick = createDefaultProject;
   const togBtn = document.getElementById('btn-sidebar-toggle');
   if (togBtn) togBtn.onclick = () => document.body.classList.toggle('sidebar-collapsed');
   const tfTog = document.getElementById('btn-textfields-toggle');
