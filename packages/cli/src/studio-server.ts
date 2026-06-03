@@ -1683,7 +1683,14 @@ function renderAttachment(a: Attachment): string[] {
 function buildHtmlGenerationPrompt(args: BuildPromptArgs): string {
   const { tmpl, exampleHtml, priorHtml, history, userText, attachments } = args;
 
-  const baseHtml = priorHtml && priorHtml !== exampleHtml ? priorHtml : exampleHtml;
+  // When a template is selected, its own source HTML is the style ground truth —
+  // NOT a prior render. Otherwise a project that was previously rendered in some
+  // other look would keep feeding that stale look back in as "the style to draw
+  // from", and the freshly-picked template gets ignored. Only fall back to
+  // priorHtml (iterate-on-last-render) when no template is in play.
+  const baseHtml = tmpl
+    ? exampleHtml
+    : (priorHtml && priorHtml !== exampleHtml ? priorHtml : exampleHtml);
   const trimmed = userText.trim();
   // A fetched article / repo / uploaded doc carries inlined content — that IS
   // the topic, so we should not interrogate the user about what the video is
@@ -1938,6 +1945,17 @@ function buildHtmlGenerationPrompt(args: BuildPromptArgs): string {
       p.push('');
       p.push(`Aim for ${requestedFrames} frames. Each frame should be self-contained, full-bleed ${resolution}, with its own opening animation. Nothing between blocks.`);
       p.push('');
+      if (attachments.length > 0) {
+        // The agent has, in practice, been handed the full article yet fallen
+        // back to generic "first-principles / see-the-essence" filler. Force it
+        // to ground every node in the source material's actual specifics.
+        p.push(`GROUNDING (REQUIRED — the source material above is the script, not decoration):`);
+        p.push(`- EVERY node's "text" MUST quote or paraphrase a SPECIFIC fact, name, number, product, or claim from the source material. Pull the real proper nouns (product names, companies, metrics, version numbers) verbatim.`);
+        p.push(`- The "synopsis" MUST name the article's actual subject — not "AI/technology trends" or any vague category.`);
+        p.push(`- BANNED: generic motivational filler with no tie to the source ("看清本质", "第一性原理", "复杂表象之下", "you really understand…", "the logic behind…"). If a line would fit ANY article, it is wrong — replace it with something that could ONLY come from THIS source.`);
+        p.push(`- A reader who knows the article must recognize each frame as being about it; a reader who doesn't must learn its specific points.`);
+        p.push('');
+      }
       // Skeleton for multi-frame — empirically claude --print returns 1 byte
       // without an example, ~10KB with one. Show the exact shape, even with
       // placeholder content; the model fills it in.
@@ -1975,7 +1993,9 @@ h1{font-size:8vw;letter-spacing:-.03em;animation:in 1s ease forwards;opacity:0;t
       p.push(`(continue with the same shape for the remaining frames — \`\`\`html#frame_2 … \`\`\`html#frame_${requestedFrames})`);
       if (baseHtml && baseHtml.length > 0) {
         p.push('');
-        p.push(`Prior preview HTML to draw style from:`);
+        p.push(tmpl
+          ? `Template HTML — this is the REQUIRED visual style. Reuse its palette, layout, typography, and animation approach; change only the text/data to fit the source material. Do NOT switch to a different look (no dark "cosmic particle" default, etc.):`
+          : `Prior preview HTML to draw style from:`);
         p.push('```html');
         p.push(baseHtml.slice(0, 3000));
         p.push('```');
@@ -1984,7 +2004,9 @@ h1{font-size:8vw;letter-spacing:-.03em;animation:in 1s ease forwards;opacity:0;t
       p.push(`Output (single-frame): begin your reply with \`\`\`html and end with \`\`\`. Nothing outside the block.`);
       p.push('');
       if (baseHtml && baseHtml.length > 0) {
-        p.push(`Prior preview HTML (iterate on its visual style if it fits, or replace if a different vibe is better):`);
+        p.push(tmpl
+          ? `Template HTML — this is the REQUIRED visual style. Reuse its palette, layout, typography, and animation approach; change only the text/data to fit the source material. Do NOT switch to a different look:`
+          : `Prior preview HTML (iterate on its visual style if it fits, or replace if a different vibe is better):`);
         p.push('```html');
         p.push(baseHtml.slice(0, 4000));
         p.push('```');
@@ -2005,7 +2027,7 @@ h1{font-size:8vw;letter-spacing:-.03em;animation:in 1.2s ease forwards;opacity:0
     }
     p.push('');
     if (tmpl) {
-      p.push(`Template visual signature: ${tmpl.name} — ${tmpl.description}. Honour it unless the user's style note overrides.`);
+      p.push(`Template visual signature (REQUIRED): ${tmpl.name} — ${tmpl.description}. Match this look — it is the whole reason the template was chosen. Only a single explicit user style note may override it; "based on this article" is NOT such an override.`);
       p.push('');
     }
     p.push(`Do NOT return an empty reply. Do NOT emit any of \`\`\`hv-options / \`\`\`hv-form / \`\`\`hv-confirm — those are over.`);
