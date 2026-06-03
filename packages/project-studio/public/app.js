@@ -23,6 +23,17 @@ const MUSIC_PRESETS = [
   { key: 'epic',      prompt: 'epic orchestral, powerful drums, soaring brass, dramatic and inspiring' },
 ];
 
+// Narration voices — MiniMax built-in voice_ids, all verified usable.
+// `key` maps to a localized label (soundtrack.voice_<key>).
+const NARRATION_VOICES = [
+  { key: 'male_warm',     voiceId: 'male-qn-qingse' },
+  { key: 'male_pro',      voiceId: 'male-qn-jingying' },
+  { key: 'male_deep',     voiceId: 'audiobook_male_1' },
+  { key: 'female_anchor', voiceId: 'presenter_female' },
+  { key: 'female_mature', voiceId: 'female-yujie' },
+  { key: 'female_sweet',  voiceId: 'female-shaonv' },
+];
+
 const API = {
   projects: () => fetch('/api/projects').then(r => r.json()),
   createProject: b => fetch('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json()),
@@ -586,6 +597,12 @@ function renderMain() {
                   <button type="button" class="st-draft" id="btn-st-draft-narration">${t('soundtrack.draft_narration')}</button>
                 </span>
                 <textarea id="st-narration-text" rows="2" placeholder="${t('soundtrack.narration_placeholder')}"></textarea>
+                <div class="st-voice-row">
+                  <span class="st-voice-label">${t('soundtrack.voice_label')}</span>
+                  <select id="st-narration-voice" class="st-voice-select">
+                    ${NARRATION_VOICES.map((v) => `<option value="${v.voiceId}">${t('soundtrack.voice_' + v.key)}</option>`).join('')}
+                  </select>
+                </div>
               </label>
               <div class="soundtrack-vols">
                 <label>${t('soundtrack.music_volume')} <input type="range" id="st-music-vol" min="-40" max="0" value="-18" /><b id="st-music-vol-val">-18 dB</b></label>
@@ -749,9 +766,10 @@ function wireSoundtrackPanel() {
     statusEl.textContent = t('soundtrack.starting');
     previewEl.innerHTML = '';
 
+    const voiceSel = document.getElementById('st-narration-voice');
     const payload = {};
     if (mp) payload.music = { prompt: mp, instrumental: true, volumeDb: Number(musicVol.value) };
-    if (nt) payload.narration = { text: nt, volumeDb: Number(narrationVol.value) };
+    if (nt) payload.narration = { text: nt, volumeDb: Number(narrationVol.value), ...(voiceSel?.value && { voiceId: voiceSel.value }) };
 
     let res;
     try {

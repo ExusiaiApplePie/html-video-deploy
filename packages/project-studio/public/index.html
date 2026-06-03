@@ -749,6 +749,12 @@
     transition: all .12s; }
   .st-preset:hover { border-color: var(--accent); color: var(--accent); }
   .st-preset.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  /* narration voice picker */
+  .st-voice-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .st-voice-label { font-size: 11px; color: var(--text-muted); }
+  .st-voice-select { font-size: 11px; padding: 3px 8px; border-radius: var(--radius-sm);
+    background: var(--bg); border: 1px solid var(--border); color: var(--text); cursor: pointer; }
+  .st-voice-select:focus { outline: none; border-color: var(--accent); }
   /* narration field header with inline draft button */
   .st-field-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .st-draft { font-size: 11px; padding: 3px 10px; border-radius: var(--radius-sm); cursor: pointer;

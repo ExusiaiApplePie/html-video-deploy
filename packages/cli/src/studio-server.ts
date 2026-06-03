@@ -464,7 +464,7 @@ export async function startStudioServer(ctx: CliContext, port: number): Promise<
             .map((n, i) => `${i + 1}. ${nodeText(n).replace(/\n/g, ' ').slice(0, 200)}`)
             .join('\n');
           const prompt = [
-            `Write a short spoken NARRATION script for this ${graph.nodes.length}-frame video.`,
+            `Write a spoken NARRATION script for this ${graph.nodes.length}-frame video — ONE line per frame, IN FRAME ORDER.`,
             ``,
             `Frames (in order):`,
             frameLines,
@@ -472,12 +472,20 @@ export async function startStudioServer(ctx: CliContext, port: number): Promise<
             graph.synopsis ? `Synopsis: ${graph.synopsis}` : '',
             ``,
             `Rules:`,
-            `- Write in the SAME LANGUAGE as the frame text above (Chinese frames → Chinese narration; English → English).`,
-            `- Natural, spoken voiceover — not a list. ~1 short sentence per frame, flowing together.`,
-            `- Keep it tight: it must be readable aloud within the video's length.`,
-            `- Plain text only. No markdown, no frame numbers, no quotes around it.`,
+            `- Output EXACTLY ${graph.nodes.length} lines, one per frame, in the SAME order as above. Line 1 narrates frame 1, line 2 narrates frame 2, and so on.`,
+            `- Each line is ONE short spoken sentence about THAT specific frame's content — distinct per frame, not a generic restatement.`,
+            `- The lines should still flow as a continuous voiceover when read top to bottom.`,
+            `- Write in the SAME LANGUAGE as the frame text above (Chinese frames → Chinese; English → English).`,
+            `- Plain text only: one sentence per line, no numbering, no bullets, no blank lines, no markdown, no quotes.`,
           ].filter((l) => l !== undefined).join('\n');
-          const text = (await callAgentSimple(agentDef, prompt, projectDir)).trim();
+          const raw = (await callAgentSimple(agentDef, prompt, projectDir)).trim();
+          // Normalize: drop any leading "1." / "- " the model may have added,
+          // collapse blank lines, keep at most one line per frame.
+          const lines = raw
+            .split('\n')
+            .map((l) => l.replace(/^\s*(?:\d+[.)、]|[-*•])\s*/, '').trim())
+            .filter((l) => l.length > 0);
+          const text = (lines.length ? lines : [raw]).join('\n');
           return json(res, 200, { narration: text });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
