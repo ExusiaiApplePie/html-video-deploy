@@ -2171,6 +2171,12 @@ function buildHtmlGenerationPrompt(args: BuildPromptArgs): string {
     // multi-frame batches. Cap at 10 (high frame counts get progressively
     // less reliable in a single pass), and tell the model so it can plan.
     const requestedFrames = Math.max(1, Math.min(10, Number(collected.frame_count ?? '4') || 4));
+    // ⚠️ FALLBACK ONLY. Real multi-frame generation goes through
+    // runSplitMultiFrameGenerate (the server routes frame_count>1 there before
+    // ever reaching this single-shot prompt). This branch only fires if that
+    // routing is bypassed. If you change multi-frame grounding / template /
+    // source-material rules, change runSplitMultiFrameGenerate — that's the
+    // path users actually hit. Keep the two in sync.
     if (isMulti) {
       p.push(`Output (multi-frame storyboard) — emit IN THIS EXACT ORDER and SHAPE:`);
       p.push(`1. ONE \`\`\`json#content-graph block.`);
@@ -2590,6 +2596,15 @@ async function runSplitMultiFrameGenerate(
     if (contentTurns.length > 0) {
       fp.push(`Source material from the user (use literally; do NOT invent facts):`);
       for (const t of contentTurns) fp.push(`  · ${t.replace(/\n/g, ' ').slice(0, 280)}`);
+      fp.push('');
+    }
+    // Fetched article/repo text — keep the per-frame HTML grounded in the real
+    // source, not just the one-line graph node. (Graph step gets the full text;
+    // give each frame a trimmed slice so it can pull accurate specifics.)
+    const frameSourceTexts = attachments.filter((a) => !!a.inlineText);
+    if (frameSourceTexts.length > 0) {
+      fp.push(`SOURCE MATERIAL (the video's real subject — use its actual facts/names/numbers, never generic filler about the content type):`);
+      for (const a of frameSourceTexts) fp.push((a.inlineText ?? '').slice(0, 3000));
       fp.push('');
     }
     fp.push(`Output: begin with \`\`\`html and end with \`\`\`. Inline CSS + JS, full-bleed ${resolution}, opens with an animation timeline. Tag visible text with data-hv-text. CDN imports (Tailwind, GSAP) fine. No prose outside the block.`);
