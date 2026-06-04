@@ -1580,11 +1580,17 @@ type ConvPhase =
   | 'opener'
   | 'content'
   | 'style'
+  | 'need-template'
   | 'format'
   | 'format-edit'
   | 'confirm'
   | 'generate'
   | 'iterate';
+
+/** Did the user pick the "choose from design templates" style option? */
+function isFromTemplateStyle(style: string): boolean {
+  return /^从设计模板选|design template|pick.*template|from template/i.test(style.trim());
+}
 
 interface PhaseInputs {
   collected?: Record<string, string>; // last submitted hv-form values (format only)
@@ -1659,7 +1665,29 @@ function detectPhase(
     inputs.pickedType = lastCardPickByPhase(history, 'type');
     inputs.pickedStyle = trimmed;
     inputs.contentTurns = collectContentTurns(history);
+    // "从设计模板选" but no template actually picked → don't silently fall back
+    // to a default look; ask the user to pick one (top-bar) or choose a style.
+    if (isFromTemplateStyle(trimmed) && !hasTemplate) {
+      return { phase: 'need-template', inputs };
+    }
     return { phase: 'format', inputs };
+  }
+
+  // User was told to pick a template (need-template card is an hv-options).
+  if (prev.kind === 'hv-options' && prev.metaPhase === 'need-template') {
+    inputs.pickedType = lastCardPickByPhase(history, 'type');
+    inputs.contentTurns = collectContentTurns(history);
+    // Picked a built-in style instead → use it.
+    if (!isFromTemplateStyle(trimmed) && !/^我已选好模板|继续|done|ready|next$/i.test(trimmed)) {
+      inputs.pickedStyle = trimmed;
+      return { phase: 'format', inputs };
+    }
+    // Said "I've picked one / continue": proceed only if a template is now set.
+    if (hasTemplate) {
+      inputs.pickedStyle = '从设计模板选';
+      return { phase: 'format', inputs };
+    }
+    return { phase: 'need-template', inputs }; // still none → ask again
   }
 
   // Last card was content-question (a plain assistant message asking for content).
@@ -2008,6 +2036,29 @@ function buildHtmlGenerationPrompt(args: BuildPromptArgs): string {
     p.push('```');
     p.push('');
     p.push(`Add ONE short sentence above the card in the user's language inviting them to pick or describe a vibe. Mention they can also upload a reference image via the 📎 button.`);
+    p.push('');
+    p.push(`Do NOT write HTML this turn. Do NOT return an empty reply.`);
+    return p.join('\n');
+  }
+
+  // ---- need-template: user chose "from design template" but hasn't picked one
+  if (phase === 'need-template') {
+    const p: string[] = [];
+    p.push(`The user chose "从设计模板选" (use a design template) but has NOT selected a template yet. Do NOT generate. Tell them — in their language, ONE short friendly line — to pick a template from the top-bar 模板 / Template dropdown, then offer this card so they can confirm once they've picked, or switch to a built-in style instead. JSON shape EXACTLY — keep "meta" verbatim:`);
+    p.push('```hv-options');
+    p.push(JSON.stringify({
+      meta: { phase: 'need-template' },
+      question: '先在顶部「模板」里选一个模板，选好后点下面继续；或直接选一种内置风格：',
+      options: [
+        { label: '我已选好模板，继续', hint: '用顶部选中的模板生成' },
+        { label: 'Cyberpunk glitch',   hint: '霓虹 / 故障感 / 高对比' },
+        { label: 'Swiss minimalist',   hint: '网格 / 无衬线 / 留白' },
+        { label: 'Warm-grain magazine',hint: '纸感 / 衬线 / 暖色' },
+        { label: 'Mono brutalist',     hint: '黑白 / 块状 / 粗体' },
+      ],
+      allow_freeform: true,
+    }, null, 2));
+    p.push('```');
     p.push('');
     p.push(`Do NOT write HTML this turn. Do NOT return an empty reply.`);
     return p.join('\n');
