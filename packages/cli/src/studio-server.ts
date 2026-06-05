@@ -1683,11 +1683,24 @@ function detectPhase(
     return { phase: 'format-edit', inputs };
   }
 
+  // Free-text format reply rescue (issue #2): if the previous assistant turn
+  // was asking for format params (whether it rendered the hv-form card or — as
+  // the model sometimes does — just asked in prose), and this user turn parses
+  // as a format answer, treat it like a card submit and advance to confirm.
+  // This stops the loop where a typed "16:9 横屏 / 5s / 10" goes unrecognised
+  // and the flow re-asks the same params in a different shape.
+  if (!hadGenerationYet(history) && lastAssistantAskedFormat(history)) {
+    const parsed = parseFormatReply(trimmed);
+    if (parsed) {
+      // Merge over any earlier card submit so partial typed answers keep
+      // the defaults the user already had.
+      inputs.collected = { ...(lastFormSubmission(history) ?? {}), ...parsed };
+      return { phase: 'confirm', inputs };
+    }
+  }
+
   // Has any successful generation already happened? Then this is iteration.
-  const hadGeneration = history.some(
-    (m) => m.role === 'assistant' && /```html|```json#content-graph|✓\s/i.test(m.content),
-  );
-  if (hadGeneration) {
+  if (hadGenerationYet(history)) {
     return { phase: 'iterate', inputs: { collected: lastFormSubmission(history) } };
   }
 
@@ -1913,6 +1926,91 @@ function lastFormSubmission(history: ChatMessage[]): Record<string, string> | un
     }
   }
   return undefined;
+}
+
+/** Has a successful generation already happened in this conversation? */
+function hadGenerationYet(history: ChatMessage[]): boolean {
+  return history.some(
+    (m) => m.role === 'assistant' && /```html|```json#content-graph|✓\s/i.test(m.content),
+  );
+}
+
+/**
+ * Was the most recent assistant turn asking the user for format params
+ * (aspect / duration / frame count)? True for the proper `hv-form` card AND
+ * for the prose fallback the model sometimes emits instead. Used to decide
+ * whether a free-text user reply should be parsed as a format answer.
+ */
+function lastAssistantAskedFormat(history: ChatMessage[]): boolean {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const m = history[i]!;
+    if (m.role !== 'assistant') continue;
+    const c = m.content;
+    if (!c.trim() || /^⚠️/.test(c.trim())) continue; // skip empty / warning turns
+    // The real hv-form card.
+    const form = /```hv-form\s*\n([\s\S]*?)```/i.exec(c);
+    if (form?.[1]) {
+      try { return JSON.parse(form[1].trim())?.meta?.phase === 'format'; } catch { return true; }
+    }
+    // Prose fallback: the turn talks about size/duration/frames without a card.
+    // Require at least two of the three concepts so an unrelated mention of
+    // "时长" elsewhere doesn't trigger it.
+    const hits = [/尺寸|横屏|竖屏|方形|aspect|比例/i, /时?长|秒|duration|\bs\b/i, /帧|frames?/i]
+      .filter((re) => re.test(c)).length;
+    return hits >= 2;
+  }
+  return false;
+}
+
+/**
+ * Best-effort parse of format params from a FREE-TEXT user reply.
+ *
+ * The format step is supposed to render an `hv-form` card (segmented buttons)
+ * whose submit carries an explicit `[hv-form:submit]` marker. But the model
+ * sometimes ignores that instruction and instead asks for the params in prose
+ * ("9:16 竖屏 / 3s / 6 …"); the user then types the answer free-form, with no
+ * marker. Without this parser the state machine can't tell the params were
+ * already given, so it loops — re-asking the same thing in a different shape
+ * (issue #2). We extract aspect / duration / frame_count heuristically so a
+ * typed reply is treated the same as a card submit.
+ *
+ * Returns undefined when the text carries no recognisable format signal, so
+ * callers can fall through to other phase logic.
+ */
+export function parseFormatReply(text: string): Record<string, string> | undefined {
+  const t = text.trim();
+  if (!t || t.length > 80) return undefined; // long text is content, not a format answer
+  const out: Record<string, string> = {};
+
+  // --- aspect: explicit ratio (16:9 / 9:16 / 1:1 / 4:5) or a keyword ---
+  const ratio = /\b(16\s*[:：]\s*9|9\s*[:：]\s*16|1\s*[:：]\s*1|4\s*[:：]\s*5)\b/.exec(t);
+  const ratioNorm = ratio?.[1]?.replace(/\s/g, '').replace('：', ':');
+  if (ratioNorm === '16:9' || /横屏|landscape|宽屏/i.test(t)) out.aspect = '16:9 横屏';
+  else if (ratioNorm === '9:16' || /竖屏|手机|portrait|vertical/i.test(t)) out.aspect = '9:16 手机竖屏';
+  else if (ratioNorm === '1:1' || /方形|square/i.test(t)) out.aspect = '1:1 方形';
+  else if (ratioNorm === '4:5' || /小红书|xiaohongshu|rednote/i.test(t)) out.aspect = '4:5 小红书';
+
+  // --- duration: a number directly tied to seconds (5s / 5秒 / 5 sec) ---
+  const dur = /(\d{1,3})\s*(?:s\b|秒|sec)/i.exec(t);
+  if (dur?.[1]) out.duration = dur[1];
+
+  // --- frame_count: a number tied to 帧/frame, or the lone trailing number in
+  //     a "a / b / c" triple where a=ratio, b=duration. ---
+  const fr = /(\d{1,2})\s*(?:帧|frames?)\b/i.exec(t);
+  if (fr?.[1]) out.frame_count = fr[1];
+  else {
+    // "16:9 横屏 / 5s / 10" — after stripping ratio+duration tokens, a bare
+    // small integer left over is the frame count.
+    const parts = t.split(/[/、,，]+/).map((s) => s.trim()).filter(Boolean);
+    if (parts.length >= 2) {
+      const last = parts[parts.length - 1]!;
+      const bare = /^(\d{1,2})\s*帧?$/.exec(last);
+      if (bare?.[1] && !/[:：s秒]/.test(last)) out.frame_count = bare[1];
+    }
+  }
+
+  // Need at least one positively-identified signal to count as a format reply.
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function lastTypePick(history: ChatMessage[]): string | undefined {
@@ -2185,6 +2283,10 @@ function buildHtmlGenerationPrompt(args: BuildPromptArgs): string {
     } else {
       p.push(`Now ask about format with ONE hv-form card — three segmented controls, no text inputs. JSON shape EXACTLY as shown — keep "meta" verbatim:`);
     }
+    // The card is the ONLY acceptable way to ask this. Asking in prose makes
+    // the user type a free-form answer with no submit marker, which the flow
+    // then fails to recognise and re-asks (issue #2).
+    p.push(`IMPORTANT: emit the hv-form card below — do NOT ask for size / duration / frames in plain prose, and do NOT list example answers for the user to type.`);
     p.push('```hv-form');
     p.push(JSON.stringify({
       meta: { phase: 'format' },
