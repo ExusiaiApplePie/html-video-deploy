@@ -1,6 +1,3 @@
 {
-  "buildCommand": "pnpm install && pnpm -r build",
-  "outputDirectory": "packages/studio-next/dist",
-  "framework": "vite",
-  "installCommand": "pnpm install"
+  "outputDirectory": "packages/project-studio/public"
 }
