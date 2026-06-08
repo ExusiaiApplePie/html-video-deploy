@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import type { CliContext } from './context.js';
-import { AssetStore, generateTts, generateMusic } from '@html-video/core';
+import { AssetStore, generateTts, generateMusic, generateXiaomiTts } from '@html-video/core';
 import { extractUrls, fetchSource } from './fetch-source.js';
 import { detectAll, findAgent, spawnAgent } from '@html-video/runtime';
 
@@ -345,7 +345,7 @@ export async function startStudioServer(ctx: CliContext, port: number): Promise<
       }
 
       // Generate soundtrack: background music (MiniMax music_generation) and/or
-      // narration (MiniMax t2a_v2). Streams SSE progress like export. The
+      // narration (Xiaomi TTS or MiniMax t2a_v2). Streams SSE progress like export. The
       // generated MP3s are stored as project assets; their ids land in
       // project.soundtrack so exportMp4 mixes them in. Generation itself does
       // NOT need ffmpeg — only the export-time mux does.
@@ -369,16 +369,8 @@ export async function startStudioServer(ctx: CliContext, port: number): Promise<
         };
         try {
           sse({ type: 'audio_started' });
-          const creds = ctx.mediaConfig.resolveMinimax();
-          if (!creds) {
-            sse({
-              type: 'audio_failed',
-              message:
-                'MiniMax API key not configured — add it in Settings → Audio (or set OD_MINIMAX_API_KEY).',
-            });
-            res.end();
-            return;
-          }
+          const xiaomiCreds = ctx.mediaConfig.resolveXiaomi();
+          const minimaxCreds = ctx.mediaConfig.resolveMinimax();
 
           const project = await ctx.orchestrator.load(projectId);
           const soundtrack = { ...(project.soundtrack ?? {}) };
@@ -391,43 +383,76 @@ export async function startStudioServer(ctx: CliContext, port: number): Promise<
           }
 
           if (wantMusic) {
-            sse({ type: 'audio_progress', stage: 'music', message: 'generating background music…' });
-            const music = await generateMusic({
-              prompt: body.music!.prompt!.trim(),
-              instrumental: body.music!.instrumental ?? true,
-              creds,
-            });
-            const { asset } = await ctx.orchestrator.addBufferAsset(
-              projectId,
-              music.bytes,
-              music.ext,
-              `background music · ${body.music!.prompt!.trim().slice(0, 60)}`,
-            );
-            soundtrack.musicAssetId = asset.id;
-            soundtrack.musicPrompt = body.music!.prompt!.trim();
-            if (body.music!.volumeDb !== undefined) soundtrack.musicVolumeDb = body.music!.volumeDb;
-            sse({ type: 'audio_progress', stage: 'music', message: music.providerNote, asset_id: asset.id });
+            if (!minimaxCreds) {
+              sse({ type: 'audio_progress', stage: 'music', message: '⚠ Music generation skipped — MiniMax API key not configured (Xiaomi does not support music generation). Set OD_MINIMAX_API_KEY or add MiniMax key in Settings → Audio.' });
+            } else {
+              sse({ type: 'audio_progress', stage: 'music', message: 'generating background music…' });
+              const music = await generateMusic({
+                prompt: body.music!.prompt!.trim(),
+                instrumental: body.music!.instrumental ?? true,
+                creds: minimaxCreds,
+              });
+              const { asset } = await ctx.orchestrator.addBufferAsset(
+                projectId,
+                music.bytes,
+                music.ext,
+                `background music · ${body.music!.prompt!.trim().slice(0, 60)}`,
+              );
+              soundtrack.musicAssetId = asset.id;
+              soundtrack.musicPrompt = body.music!.prompt!.trim();
+              if (body.music!.volumeDb !== undefined) soundtrack.musicVolumeDb = body.music!.volumeDb;
+              sse({ type: 'audio_progress', stage: 'music', message: music.providerNote, asset_id: asset.id });
+            }
           }
 
           if (wantNarration) {
-            sse({ type: 'audio_progress', stage: 'narration', message: 'generating narration…' });
-            const nar = await generateTts({
-              text: body.narration!.text!.trim(),
-              ...(body.narration!.voiceId !== undefined && { voiceId: body.narration!.voiceId }),
-              ...(body.narration!.languageBoost !== undefined && { languageBoost: body.narration!.languageBoost }),
-              creds,
-            });
-            const { asset } = await ctx.orchestrator.addBufferAsset(
-              projectId,
-              nar.bytes,
-              nar.ext,
-              `narration · ${body.narration!.text!.trim().slice(0, 60)}`,
-            );
-            soundtrack.narrationAssetId = asset.id;
-            soundtrack.narrationText = body.narration!.text!.trim();
-            if (body.narration!.byFrame) soundtrack.narrationByFrame = body.narration!.byFrame;
-            if (body.narration!.volumeDb !== undefined) soundtrack.narrationVolumeDb = body.narration!.volumeDb;
-            sse({ type: 'audio_progress', stage: 'narration', message: nar.providerNote, asset_id: asset.id });
+            if (xiaomiCreds) {
+              // Xiaomi TTS (free, preferred)
+              sse({ type: 'audio_progress', stage: 'narration', message: 'generating narration (Xiaomi TTS)…' });
+              const nar = await generateXiaomiTts({
+                text: body.narration!.text!.trim(),
+                ...(body.narration!.voiceId !== undefined && { voiceId: body.narration!.voiceId }),
+                creds: xiaomiCreds,
+              });
+              const { asset } = await ctx.orchestrator.addBufferAsset(
+                projectId,
+                nar.bytes,
+                nar.ext,
+                `narration · ${body.narration!.text!.trim().slice(0, 60)}`,
+              );
+              soundtrack.narrationAssetId = asset.id;
+              soundtrack.narrationText = body.narration!.text!.trim();
+              if (body.narration!.byFrame) soundtrack.narrationByFrame = body.narration!.byFrame;
+              if (body.narration!.volumeDb !== undefined) soundtrack.narrationVolumeDb = body.narration!.volumeDb;
+              sse({ type: 'audio_progress', stage: 'narration', message: nar.providerNote, asset_id: asset.id });
+            } else if (minimaxCreds) {
+              // MiniMax fallback
+              sse({ type: 'audio_progress', stage: 'narration', message: 'generating narration (MiniMax)…' });
+              const nar = await generateTts({
+                text: body.narration!.text!.trim(),
+                ...(body.narration!.voiceId !== undefined && { voiceId: body.narration!.voiceId }),
+                ...(body.narration!.languageBoost !== undefined && { languageBoost: body.narration!.languageBoost }),
+                creds: minimaxCreds,
+              });
+              const { asset } = await ctx.orchestrator.addBufferAsset(
+                projectId,
+                nar.bytes,
+                nar.ext,
+                `narration · ${body.narration!.text!.trim().slice(0, 60)}`,
+              );
+              soundtrack.narrationAssetId = asset.id;
+              soundtrack.narrationText = body.narration!.text!.trim();
+              if (body.narration!.byFrame) soundtrack.narrationByFrame = body.narration!.byFrame;
+              if (body.narration!.volumeDb !== undefined) soundtrack.narrationVolumeDb = body.narration!.volumeDb;
+              sse({ type: 'audio_progress', stage: 'narration', message: nar.providerNote, asset_id: asset.id });
+            } else {
+              sse({
+                type: 'audio_failed',
+                message: 'No TTS provider configured — set XIAOMI_API_KEY (free) or OD_MINIMAX_API_KEY in Settings → Audio.',
+              });
+              res.end();
+              return;
+            }
           }
 
           if (body.fadeInSec !== undefined) soundtrack.fadeInSec = body.fadeInSec;

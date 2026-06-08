@@ -19,3 +19,8 @@ export {
   generateMusic,
 } from './minimax.js';
 export type { MinimaxCredentials, MinimaxAudioResult } from './minimax.js';
+export {
+  resolveXiaomiTtsCredentials,
+  generateXiaomiTts,
+} from './xiaomi-tts.js';
+export type { XiaomiTtsCredentials } from './xiaomi-tts.js';

@@ -14,10 +14,11 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveMinimaxCredentials, type MinimaxCredentials } from '@html-video/core';
+import { resolveMinimaxCredentials, type MinimaxCredentials, resolveXiaomiTtsCredentials, type XiaomiTtsCredentials } from '@html-video/core';
 
 interface MediaConfig {
   minimax?: { apiKey?: string; baseUrl?: string };
+  xiaomi?: { apiKey?: string; baseUrl?: string };
 }
 
 export class MediaConfigStore {
@@ -77,10 +78,47 @@ export class MediaConfigStore {
   resolveMinimax(): MinimaxCredentials | null {
     const cfg = this.read().minimax;
     if (cfg?.apiKey) {
-      const baseUrl = (cfg.baseUrl || '').trim().replace(/\/$/, '') || 'https://api.minimaxi.chat/v1';
+      const baseUrl = (cfg.baseUrl || '').trim().replace(/\/+$/, '') || 'https://api.minimaxi.chat/v1';
       return { apiKey: cfg.apiKey, baseUrl };
     }
     return resolveMinimaxCredentials();
+  }
+
+  // ── Xiaomi TTS ────────────────────────────────────────────────────
+
+  getXiaomiStatus(): { configured: boolean; source: 'config' | 'env' | 'none'; maskedKey: string; baseUrl: string } {
+    const cfg = this.read().xiaomi;
+    if (cfg?.apiKey) {
+      return { configured: true, source: 'config', maskedKey: mask(cfg.apiKey), baseUrl: cfg.baseUrl ?? '' };
+    }
+    const env = resolveXiaomiTtsCredentials();
+    if (env) {
+      return { configured: true, source: 'env', maskedKey: mask(env.apiKey), baseUrl: env.baseUrl };
+    }
+    return { configured: false, source: 'none', maskedKey: '', baseUrl: '' };
+  }
+
+  setXiaomi(apiKey: string, baseUrl?: string): void {
+    const cfg = this.read();
+    cfg.xiaomi = { apiKey: apiKey.trim() };
+    const b = (baseUrl ?? '').trim();
+    if (b) cfg.xiaomi.baseUrl = b;
+    this.write(cfg);
+  }
+
+  clearXiaomi(): void {
+    const cfg = this.read();
+    delete cfg.xiaomi;
+    this.write(cfg);
+  }
+
+  resolveXiaomi(): XiaomiTtsCredentials | null {
+    const cfg = this.read().xiaomi;
+    if (cfg?.apiKey) {
+      const baseUrl = (cfg.baseUrl || '').trim().replace(/\/+$/, '') || 'https://token-plan-cn.xiaomimimo.com/v1';
+      return { apiKey: cfg.apiKey, baseUrl };
+    }
+    return resolveXiaomiTtsCredentials();
   }
 }
 
